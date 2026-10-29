@@ -12,10 +12,11 @@
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 system-ui,sans-serif; }
   main { max-width:520px; margin:40px auto; padding:0 16px; }
-  h1 { font-size:1.6rem; margin:0 0 16px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
+  h1 { font-size:1.6rem; margin:0; }
   form { display:flex; gap:8px; margin-bottom:16px; }
   input[type=text] { flex:1; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); font-size:1rem; }
-  button { border:0; border-radius:8px; background:var(--accent); color:#fff; padding:0 16px; font-size:1rem; cursor:pointer; }
+  button { border:0; border-radius:8px; background:var(--accent); color:#fff; padding:10px 16px; font-size:1rem; cursor:pointer; }
   ul { list-style:none; margin:0; padding:0; background:var(--card); border-radius:10px; overflow:hidden; }
   li { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--line); }
   li:last-child { border-bottom:0; }
@@ -25,32 +26,107 @@
   li .del { background:none; color:var(--muted); padding:0 4px; font-size:1.2rem; }
   li .del:hover { color:#e5484d; }
   footer { display:flex; justify-content:space-between; margin-top:12px; color:var(--muted); font-size:.9rem; }
-  footer button { background:none; color:var(--muted); padding:0; font-size:.9rem; }
+  .link { background:none; color:var(--muted); padding:0; font-size:.9rem; }
   .empty { padding:20px; text-align:center; color:var(--muted); }
+  .status { margin-top:16px; font-size:.85rem; color:var(--muted); text-align:center; }
+  #login { text-align:center; padding:60px 0; }
+  #login p { color:var(--muted); }
+  #login button { padding:12px 22px; }
+  [hidden] { display:none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>To-Do</h1>
-  <form id="form">
-    <input id="input" type="text" placeholder="Add a task…" autocomplete="off" required>
-    <button>Add</button>
-  </form>
-  <ul id="list"></ul>
-  <footer>
-    <span id="count"></span>
-    <button id="clear">Clear completed</button>
-  </footer>
-</main>
-<script>
-  const KEY = "todos-v1";
-  let todos = [];
-  try { todos = JSON.parse(localStorage.getItem(KEY)) || []; } catch (e) {}
+  <header>
+    <h1>To-Do</h1>
+    <button class="link" id="signout" hidden>Sign out</button>
+  </header>
 
-  const list = document.getElementById("list");
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(todos)); } catch (e) {} };
+  <section id="login" hidden>
+    <p>Sign in to see your list on any device.</p>
+    <button id="signin">Sign in with Google</button>
+  </section>
+
+  <section id="app" hidden>
+    <form id="form">
+      <input id="input" type="text" placeholder="Add a task…" autocomplete="off" required>
+      <button>Add</button>
+    </form>
+    <ul id="list"></ul>
+    <footer>
+      <span id="count"></span>
+      <button class="link" id="clear">Clear completed</button>
+    </footer>
+  </section>
+
+  <div class="status" id="status"></div>
+</main>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut }
+    from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+  import { getFirestore, doc, setDoc, onSnapshot }
+    from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+  // Paste your Firebase web app config here (Firebase console → Project settings → Your apps).
+  const firebaseConfig = {
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    appId: "YOUR_APP_ID"
+  };
+
+  const $ = id => document.getElementById(id);
+  const statusEl = $("status");
+
+  if (firebaseConfig.projectId === "YOUR_PROJECT_ID") {
+    $("login").hidden = false;
+    $("signin").hidden = true;
+    $("login").querySelector("p").textContent = "Add your Firebase config in index.html to enable sign-in.";
+    throw new Error("Firebase config missing");
+  }
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  let todos = [];
+  let ref = null;
+  let unsub = null;
+
+  $("signin").onclick = async () => {
+    statusEl.textContent = "";
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+    catch (e) { statusEl.textContent = "Sign-in failed: " + e.message; }
+  };
+  $("signout").onclick = () => signOut(auth);
+
+  onAuthStateChanged(auth, user => {
+    if (unsub) { unsub(); unsub = null; }
+    ref = null; todos = [];
+    $("login").hidden = !!user;
+    $("app").hidden = !user;
+    $("signout").hidden = !user;
+    if (!user) { statusEl.textContent = ""; return; }
+
+    ref = doc(db, "users", user.uid);
+    statusEl.textContent = "Signed in as " + (user.email || user.displayName);
+    unsub = onSnapshot(ref, snap => {
+      if (snap.metadata.hasPendingWrites) return;
+      todos = snap.exists() ? (snap.data().todos || []) : [];
+      render();
+    }, err => { statusEl.textContent = "Sync error: " + err.message; });
+    render();
+  });
+
+  function commit() {
+    render();
+    if (ref) setDoc(ref, { todos }).catch(e => statusEl.textContent = "Sync error: " + e.message);
+  }
 
   function render() {
+    const list = $("list");
     list.innerHTML = "";
     if (!todos.length) list.innerHTML = '<div class="empty">Nothing to do 🎉</div>';
     todos.forEach((t, i) => {
@@ -58,32 +134,28 @@
       if (t.done) li.className = "done";
       const cb = document.createElement("input");
       cb.type = "checkbox"; cb.checked = t.done;
-      cb.onchange = () => { t.done = cb.checked; save(); render(); };
+      cb.onchange = () => { t.done = cb.checked; commit(); };
       const span = document.createElement("span");
       span.textContent = t.text;
       const del = document.createElement("button");
       del.className = "del"; del.textContent = "×"; del.title = "Delete";
-      del.onclick = () => { todos.splice(i, 1); save(); render(); };
+      del.onclick = () => { todos.splice(i, 1); commit(); };
       li.append(cb, span, del);
       list.append(li);
     });
     const left = todos.filter(t => !t.done).length;
-    document.getElementById("count").textContent = left + " item" + (left === 1 ? "" : "s") + " left";
+    $("count").textContent = left + " item" + (left === 1 ? "" : "s") + " left";
   }
 
-  document.getElementById("form").onsubmit = e => {
+  $("form").onsubmit = e => {
     e.preventDefault();
-    const input = document.getElementById("input");
-    const text = input.value.trim();
+    const text = $("input").value.trim();
     if (!text) return;
     todos.push({ text, done: false });
-    input.value = "";
-    save(); render();
+    $("input").value = "";
+    commit();
   };
-  document.getElementById("clear").onclick = () => {
-    todos = todos.filter(t => !t.done); save(); render();
-  };
-  render();
+  $("clear").onclick = () => { todos = todos.filter(t => !t.done); commit(); };
 </script>
 </body>
 </html>
