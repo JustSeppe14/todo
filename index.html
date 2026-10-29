@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>To-Do</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234f7cff'/%3E%3Cpath d='M18 33l10 10 20-22' fill='none' stroke='white' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%234f7cff'/%3E%3Cpath d='M18 33l10 10 20-22' fill='none' stroke='white' stroke-width='8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
   :root { --bg:#f5f6f8; --card:#fff; --text:#222; --muted:#888; --accent:#4f7cff; --line:#e6e8ec; }
   @media (prefers-color-scheme: dark) {
@@ -15,16 +17,22 @@
   header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
   h1 { font-size:1.6rem; margin:0; }
   form { display:flex; gap:8px; margin-bottom:16px; }
-  input[type=text] { flex:1; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); font-size:1rem; }
+  input[type=text], textarea { border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); font:inherit; }
+  input[type=text] { flex:1; padding:12px; font-size:1rem; }
   button { border:0; border-radius:8px; background:var(--accent); color:#fff; padding:10px 16px; font-size:1rem; cursor:pointer; }
   ul { list-style:none; margin:0; padding:0; background:var(--card); border-radius:10px; overflow:hidden; }
-  li { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--line); }
+  li { padding:12px 14px; border-bottom:1px solid var(--line); }
   li:last-child { border-bottom:0; }
-  li span { flex:1; word-break:break-word; }
-  li.done span { text-decoration:line-through; color:var(--muted); }
-  li input { width:18px; height:18px; }
-  li .del { background:none; color:var(--muted); padding:0 4px; font-size:1.2rem; }
-  li .del:hover { color:#e5484d; }
+  .row { display:flex; align-items:center; gap:12px; }
+  .row span { flex:1; word-break:break-word; }
+  li.done .row span { text-decoration:line-through; color:var(--muted); }
+  .row input { width:18px; height:18px; }
+  .icon { background:none; color:var(--muted); padding:0 4px; font-size:1.1rem; }
+  .icon:hover { color:var(--accent); }
+  .icon.has-note { color:var(--accent); }
+  .icon.del:hover { color:#e5484d; }
+  .note { margin:8px 0 0 30px; color:var(--muted); font-size:.9rem; white-space:pre-wrap; word-break:break-word; cursor:pointer; }
+  textarea { display:block; width:calc(100% - 30px); margin:8px 0 0 30px; padding:8px 10px; font-size:.95rem; resize:vertical; min-height:70px; }
   footer { display:flex; justify-content:space-between; margin-top:12px; color:var(--muted); font-size:.9rem; }
   .link { background:none; color:var(--muted); padding:0; font-size:.9rem; }
   .empty { padding:20px; text-align:center; color:var(--muted); }
@@ -72,8 +80,8 @@
   // Paste your Firebase web app config here (Firebase console → Project settings → Your apps).
   const firebaseConfig = {
     apiKey: "AIzaSyA-dX5noSLOg0RyaLH_dEqpx_dRWKuWmo4",
-  authDomain: "todo-94123.firebaseapp.com",
-  projectId: "todo-94123",
+    authDomain: "todo-94123.firebaseapp.com",
+    projectId: "todo-94123",
     appId: "1:566235330557:web:02ea663f1109ca41bd0b94"
   };
 
@@ -94,6 +102,11 @@
   let todos = [];
   let ref = null;
   let unsub = null;
+  const openNotes = new Set();   // ids of tasks whose note editor is open
+  let renderPending = false;     // a remote update arrived while typing a note
+
+  const newId = () => (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()));
+  const normalize = list => list.map(t => ({ id: t.id || newId(), text: t.text, done: !!t.done, note: t.note || "" }));
 
   $("signin").onclick = async () => {
     statusEl.textContent = "";
@@ -104,7 +117,7 @@
 
   onAuthStateChanged(auth, user => {
     if (unsub) { unsub(); unsub = null; }
-    ref = null; todos = [];
+    ref = null; todos = []; openNotes.clear();
     $("login").hidden = !!user;
     $("app").hidden = !user;
     $("signout").hidden = !user;
@@ -114,35 +127,86 @@
     statusEl.textContent = "Signed in as " + (user.email || user.displayName);
     unsub = onSnapshot(ref, snap => {
       if (snap.metadata.hasPendingWrites) return;
-      todos = snap.exists() ? (snap.data().todos || []) : [];
-      render();
+      todos = snap.exists() ? normalize(snap.data().todos || []) : [];
+      if (document.activeElement && document.activeElement.tagName === "TEXTAREA") renderPending = true;
+      else render();
     }, err => { statusEl.textContent = "Sync error: " + err.message; });
     render();
   });
 
-  function commit() {
-    render();
+  function push() {
     if (ref) setDoc(ref, { todos }).catch(e => statusEl.textContent = "Sync error: " + e.message);
   }
+  function commit() { render(); push(); }
 
   function render() {
+    renderPending = false;
     const list = $("list");
     list.innerHTML = "";
     if (!todos.length) list.innerHTML = '<div class="empty">Nothing to do 🎉</div>';
+
     todos.forEach((t, i) => {
       const li = document.createElement("li");
       if (t.done) li.className = "done";
+
+      const row = document.createElement("div");
+      row.className = "row";
+
       const cb = document.createElement("input");
       cb.type = "checkbox"; cb.checked = t.done;
       cb.onchange = () => { t.done = cb.checked; commit(); };
+
       const span = document.createElement("span");
       span.textContent = t.text;
+
+      const noteBtn = document.createElement("button");
+      noteBtn.className = "icon" + (t.note ? " has-note" : "");
+      noteBtn.textContent = "✎";
+      noteBtn.title = t.note ? "Edit remark" : "Add remark";
+      noteBtn.onclick = () => {
+        openNotes.has(t.id) ? openNotes.delete(t.id) : openNotes.add(t.id);
+        render();
+        if (openNotes.has(t.id)) {
+          const ta = list.querySelector('textarea[data-id="' + t.id + '"]');
+          if (ta) ta.focus();
+        }
+      };
+
       const del = document.createElement("button");
-      del.className = "del"; del.textContent = "×"; del.title = "Delete";
-      del.onclick = () => { todos.splice(i, 1); commit(); };
-      li.append(cb, span, del);
+      del.className = "icon del"; del.textContent = "×"; del.title = "Delete";
+      del.onclick = () => { openNotes.delete(t.id); todos.splice(i, 1); commit(); };
+
+      row.append(cb, span, noteBtn, del);
+      li.append(row);
+
+      if (openNotes.has(t.id)) {
+        const ta = document.createElement("textarea");
+        ta.dataset.id = t.id;
+        ta.placeholder = "Remarks…";
+        ta.value = t.note;
+        let timer;
+        ta.oninput = () => {
+          t.note = ta.value;
+          clearTimeout(timer);
+          timer = setTimeout(push, 600);
+        };
+        ta.onblur = () => {
+          clearTimeout(timer);
+          t.note = ta.value.trim();
+          if (!t.note) openNotes.delete(t.id);
+          commit();
+        };
+        li.append(ta);
+      } else if (t.note) {
+        const note = document.createElement("div");
+        note.className = "note";
+        note.textContent = t.note;
+        note.onclick = () => noteBtn.click();
+        li.append(note);
+      }
       list.append(li);
     });
+
     const left = todos.filter(t => !t.done).length;
     $("count").textContent = left + " item" + (left === 1 ? "" : "s") + " left";
   }
@@ -151,7 +215,7 @@
     e.preventDefault();
     const text = $("input").value.trim();
     if (!text) return;
-    todos.push({ text, done: false });
+    todos.push({ id: newId(), text, done: false, note: "" });
     $("input").value = "";
     commit();
   };
